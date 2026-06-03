@@ -108,11 +108,27 @@ Access: `http://YOUR_PUBLIC_IP:3000`
 
 ### Step 5: Make it nice (HTTPS + nice domain) - Recommended
 
-Use **Cloudflare Tunnel** (free, no open ports on Oracle, automatic HTTPS, works great behind CGNAT/firewalls):
+Use **Cloudflare Tunnel** (free, no open ports on Oracle, automatic HTTPS, works great behind CGNAT/firewalls). This is the best way to "host it to Cloudflare".
+
+There's a helper script included in the repo: `setup-cloudflare-tunnel.sh`.
+
+On the VM (after the app is running with `docker compose up -d --build`):
+
+```bash
+chmod +x setup-cloudflare-tunnel.sh
+./setup-cloudflare-tunnel.sh
+```
+
+The script will:
+- Install cloudflared (arm64 version for Oracle Ampere)
+- Offer a quick one-command temporary public URL (`https://...trycloudflare.com`)
+- Guide through permanent named tunnel + optional custom domain
+- Optionally set it up as a systemd service
+
+Manual steps (if you prefer not to use the script):
 
 1. On the VM:
 ```bash
-# Install cloudflared
 curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cloudflared.deb
 sudo dpkg -i cloudflared.deb
 ```
