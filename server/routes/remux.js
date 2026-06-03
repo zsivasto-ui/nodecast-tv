@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
+const { requireAuth } = require('../auth');
+
+// Remux uses server CPU; require auth to prevent abuse
+router.use(requireAuth);
 
 /**
  * Remux stream (container conversion only)

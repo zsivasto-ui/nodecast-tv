@@ -5,6 +5,10 @@ const path = require('path');
 const fs = require('fs').promises;
 const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
+const { requireAuth } = require('../auth');
+
+// Transcoding is CPU/GPU heavy; all transcode endpoints require authentication
+router.use(requireAuth);
 
 /**
  * Transcode Routes
@@ -45,8 +49,8 @@ router.post('/session', async (req, res) => {
             userAgent,
             seekOffset: seekOffset || 0,
             hwEncoder: settings.hwEncoder || 'software',
-            maxResolution: settings.maxResolution || '1080p',
-            quality: settings.quality || 'medium',
+            maxResolution: settings.maxResolution || '720p',
+            quality: settings.quality || 'low',
             audioMixPreset: settings.audioMixPreset || 'auto', // Audio downmix preset
             // Upscaling options
             upscaleEnabled: settings.upscaleEnabled || false,
@@ -60,8 +64,9 @@ router.post('/session', async (req, res) => {
 
         await session.start();
 
-        // Wait for playlist to be ready (first segments generated)
-        const ready = await session.waitForPlaylist(15000);
+        // Wait for playlist to be ready (first segments generated).
+        // Increased timeout for slow free-tier VMs or large VOD files.
+        const ready = await session.waitForPlaylist(45000);
 
         if (!ready) {
             await transcodeSession.removeSession(session.id);
@@ -198,6 +203,8 @@ router.get('/', async (req, res) => {
         // Prevent Range/HEAD requests that some providers reject with 405
         '-seekable', '0',
         '-i', url,
+        // Limit threads for low-resource free-tier VMs
+        '-threads', '2',
         // Map only first video and audio stream (avoid subtitle streams causing issues)
         '-map', '0:v:0',
         '-map', '0:a:0?', // ? makes audio optional if not present

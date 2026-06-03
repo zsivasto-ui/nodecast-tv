@@ -279,6 +279,34 @@ class ChannelList {
         }
     }
 
+    /**
+     * Timeout wrapper for slow list loads (prevents endless spinner on e2-micro or large catalogs)
+     */
+    withTimeout(promise, ms = 20000) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout loading from provider (slow VM or network)')), ms))
+        ]);
+    }
+
+    /**
+     * Simple last-good cache using localStorage so we can show *something* even if current load times out
+     */
+    _getChannelCache(key) {
+        try {
+            const raw = localStorage.getItem('nc_channels_' + key);
+            if (!raw) return null;
+            const entry = JSON.parse(raw);
+            if (Date.now() - entry.t < 10 * 60 * 1000) return entry.data; // 10 min TTL
+        } catch (e) {}
+        return null;
+    }
+    _setChannelCache(key, data) {
+        try {
+            localStorage.setItem('nc_channels_' + key, JSON.stringify({ t: Date.now(), data }));
+        } catch (e) {}
+    }
+
     escapeHtml(text) {
         if (!text) return '';
         return text
@@ -299,6 +327,7 @@ class ChannelList {
         // Reset batching
         this.currentBatch = 0;
         this.batchSize = 100; // Number of groups to render per batch (increased to handle many hidden groups)
+
         this.container.innerHTML = ''; // Clear container
 
         // Filter and Group channels
@@ -716,7 +745,7 @@ class ChannelList {
         const [type, id] = sourceValue.split(':');
 
         try {
-            this.container.innerHTML = '<div class="loading"></div>';
+            this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div style="margin-top:8px;font-size:12px;opacity:0.7;">Loading channels...</div></div>';
 
             if (type === 'xtream') {
                 await this.loadXtreamChannels(parseInt(id));
@@ -747,19 +776,33 @@ class ChannelList {
         this.groups = [];
 
         try {
-            this.container.innerHTML = '<div class="loading"></div>';
+            this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div style="margin-top:8px;font-size:12px;opacity:0.7;">Loading channels from providers (can be slow for large lists on free tier)...</div></div>';
 
             const xtreamSources = this.sources.filter(s => s.type === 'xtream' && s.enabled);
             const m3uSources = this.sources.filter(s => s.type === 'm3u' && s.enabled);
             console.log('[ChannelList] loadAllChannels: xtream=', xtreamSources.length, 'm3u=', m3uSources.length);
 
-            for (const source of xtreamSources) {
-                await this.loadXtreamChannels(source.id, true);
-            }
-
-            for (const source of m3uSources) {
-                await this.loadM3uChannels(source.id, true);
-            }
+            // Parallel + per-source timeout + cache fallback (key fix for endless spinners)
+            const loadPromises = [
+                ...xtreamSources.map(s => this.loadXtreamChannels(s.id, true).catch(e => {
+                    console.warn('[ChannelList] xtream source', s.id, 'load failed:', e.message);
+                    // try cache fallback
+                    const cached = this._getChannelCache('xtream_' + s.id);
+                    if (cached) {
+                        this.channels = this.channels.concat(cached.channels || []);
+                        this.groups = this.groups.concat(cached.groups || []);
+                    }
+                })),
+                ...m3uSources.map(s => this.loadM3uChannels(s.id, true).catch(e => {
+                    console.warn('[ChannelList] m3u source', s.id, 'load failed:', e.message);
+                    const cached = this._getChannelCache('m3u_' + s.id);
+                    if (cached) {
+                        this.channels = this.channels.concat(cached.channels || []);
+                        this.groups = this.groups.concat(cached.groups || []);
+                    }
+                }))
+            ];
+            await Promise.all(loadPromises);
 
             await Promise.all([
                 this.loadHiddenItems(),
@@ -768,6 +811,12 @@ class ChannelList {
             this.render();
         } catch (err) {
             console.error('Error loading all channels:', err);
+            // Fallback to any channels we did manage to load, or show error
+            if (this.channels.length > 0) {
+                this.render();
+            } else {
+                this.container.innerHTML = `<div class="empty-state"><p>Error loading channels</p><p class="hint">${err.message || 'Provider or VM slow'}</p></div>`;
+            }
         }
     }
 
@@ -780,11 +829,42 @@ class ChannelList {
             this.groups = [];
         }
 
-        const categories = await API.proxy.xtream.liveCategories(sourceId);
-        const streams = await API.proxy.xtream.liveStreams(sourceId);
+        // Parallel cats + streams for speed + timeout
+        let categories = [];
+        let streams = [];
+        const cacheKey = 'xtream_' + sourceId;
+        try {
+            const cached = this._getChannelCache(cacheKey);
+            if (cached && (!cached.ts || Date.now() - cached.ts < 5*60*1000)) {
+                categories = cached.categories || [];
+                streams = cached.streams || [];
+            }
+        } catch(e){}
+
+        if (!categories.length || !streams.length) {
+            try {
+                [categories, streams] = await Promise.all([
+                    this.withTimeout(API.proxy.xtream.liveCategories(sourceId), 15000),
+                    this.withTimeout(API.proxy.xtream.liveStreams(sourceId), 20000)
+                ]);
+                // save for fallback
+                this._setChannelCache(cacheKey, { categories, streams, ts: Date.now() });
+            } catch (e) {
+                console.warn('[ChannelList] loadXtreamChannels timeout/error for', sourceId, e.message);
+                // fallback to any recent cache even if expired
+                const cached = this._getChannelCache(cacheKey);
+                if (cached) {
+                    categories = cached.categories || [];
+                    streams = cached.streams || [];
+                } else {
+                    categories = [];
+                    streams = [];
+                }
+            }
+        }
 
         // Map categories to groups
-        const categoryGroups = categories.map(cat => ({
+        const categoryGroups = (categories || []).map(cat => ({
             id: `xtream_${sourceId}_${cat.category_id}`,
             name: cat.category_name,
             sourceId,
@@ -794,7 +874,7 @@ class ChannelList {
         this.groups = this.groups.concat(categoryGroups);
 
         // Map streams to channels
-        const channelList = streams.map(stream => ({
+        const channelList = (streams || []).map(stream => ({
             id: `xtream_${sourceId}_${stream.stream_id}`,
             streamId: stream.stream_id,
             name: stream.name,
@@ -802,7 +882,7 @@ class ChannelList {
             tvgLogo: stream.stream_icon,
             groupId: `xtream_${sourceId}_${stream.category_id}`,
             // Use string comparison to handle type mismatches (number vs string category_id)
-            groupTitle: categories.find(c => String(c.category_id) === String(stream.category_id))?.category_name || 'Uncategorized',
+            groupTitle: (categories || []).find(c => String(c.category_id) === String(stream.category_id))?.category_name || 'Uncategorized',
             sourceId,
             sourceType: 'xtream'
         }));
@@ -821,11 +901,40 @@ class ChannelList {
         }
 
         // Use Xtream API endpoints - backend now supports M3U sources too
-        const categories = await API.proxy.xtream.liveCategories(sourceId);
-        const streams = await API.proxy.xtream.liveStreams(sourceId);
+        // Parallel + timeout + cache
+        let categories = [];
+        let streams = [];
+        const cacheKey = 'm3u_' + sourceId;
+        try {
+            const cached = this._getChannelCache(cacheKey);
+            if (cached && (!cached.ts || Date.now() - cached.ts < 5*60*1000)) {
+                categories = cached.categories || [];
+                streams = cached.streams || [];
+            }
+        } catch(e){}
+
+        if (!categories.length || !streams.length) {
+            try {
+                [categories, streams] = await Promise.all([
+                    this.withTimeout(API.proxy.xtream.liveCategories(sourceId), 15000),
+                    this.withTimeout(API.proxy.xtream.liveStreams(sourceId), 20000)
+                ]);
+                this._setChannelCache(cacheKey, { categories, streams, ts: Date.now() });
+            } catch (e) {
+                console.warn('[ChannelList] loadM3uChannels timeout/error for', sourceId, e.message);
+                const cached = this._getChannelCache(cacheKey);
+                if (cached) {
+                    categories = cached.categories || [];
+                    streams = cached.streams || [];
+                } else {
+                    categories = [];
+                    streams = [];
+                }
+            }
+        }
 
         // Map categories to groups (keeping m3u sourceType for downstream compatibility)
-        const m3uGroups = categories.map(cat => ({
+        const m3uGroups = (categories || []).map(cat => ({
             id: `m3u_${sourceId}_${cat.category_id}`,
             name: cat.category_name,
             sourceId,
@@ -835,7 +944,7 @@ class ChannelList {
         this.groups = this.groups.concat(m3uGroups);
 
         // Map streams to channels
-        const channelList = streams.map(stream => ({
+        const channelList = (streams || []).map(stream => ({
             id: `m3u_${sourceId}_${stream.stream_id}`,
             streamId: stream.stream_id,
             name: stream.name,
@@ -843,7 +952,7 @@ class ChannelList {
             tvgLogo: stream.stream_icon,
             url: stream.stream_url, // M3U has direct URLs
             groupId: `m3u_${sourceId}_${stream.category_id}`,
-            groupTitle: categories.find(c => String(c.category_id) === String(stream.category_id))?.category_name || 'Uncategorized',
+            groupTitle: (categories || []).find(c => String(c.category_id) === String(stream.category_id))?.category_name || 'Uncategorized',
             sourceId,
             sourceType: 'm3u'
         }));

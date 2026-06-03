@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+data
+transcode-cache
+.git
+.gitignore
+*.md
+.env
+.env.*
+Dockerfile
+docker-compose*.yml
+nodecast.patch

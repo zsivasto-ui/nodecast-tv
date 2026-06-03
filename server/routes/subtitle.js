@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
+const { requireAuth } = require('../auth');
+
+// Subtitle extraction (ffmpeg) requires auth
+router.use(requireAuth);
 
 /**
  * Subtitle extraction endpoint

@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
+const { requireAuth } = require('../auth');
+
+// Probe can be resource intensive (ffprobe spawn); require auth
+router.use(requireAuth);
 
 /**
  * Probe endpoint - detects stream codecs and container
@@ -28,7 +32,7 @@ const BROWSER_AUDIO_CODECS = ['aac', 'mp3', 'opus', 'vorbis'];
 /**
  * Probe stream with ffprobe
  */
-function probeStream(url, ffprobePath, userAgent = null, timeout = 15000) {
+function probeStream(url, ffprobePath, userAgent = null, timeout = 20000) {
     return new Promise((resolve, reject) => {
         const args = [
             '-v', 'error',

@@ -1,13 +1,20 @@
 services:
   nodecast-tv:
+    # For production on your own server/Oracle etc, build locally or from your fork:
+    # build: .
+    # Or use the official image (may lag behind your local fixes):
     image: ghcr.io/technomancer702/nodecast-tv:latest
-    build: https://github.com/technomancer702/nodecast-tv.git#main
+    # To build from your GitHub fork instead of pulling:
+    # build: https://github.com/YOUR_USERNAME/nodecast-tv.git#main
     container_name: nodecast-tv
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
+      - ./transcode-cache:/app/transcode-cache
     restart: unless-stopped
     environment:
       - NODE_ENV=production
-      - PORT=3000 # Internal container port
+      - PORT=3000
+    # For Oracle free / low resource: software encode is default and recommended
+    # Add more env as needed (see .env.example)

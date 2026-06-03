@@ -287,7 +287,21 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(res => res.json())
         .then(data => {
             const badge = document.getElementById('version-badge');
-            if (badge && data.version) badge.textContent = `v${data.version}`;
+            if (badge && data.version) {
+                badge.textContent = `v${data.version}`;
+                badge.style.cursor = 'pointer';
+                badge.title = 'View About';
+                badge.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    window.app.navigateTo('settings');
+                    // Switch to about tab shortly after
+                    setTimeout(() => {
+                        if (window.app.pages.settings && typeof window.app.pages.settings.switchTab === 'function') {
+                            window.app.pages.settings.switchTab('about');
+                        }
+                    }, 60);
+                });
+            }
         })
         .catch(() => { });
 });

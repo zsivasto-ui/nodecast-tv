@@ -1,0 +1,26 @@
+# fly launch will use this or generate
+app = "nodecast-tv-yourname"  # change me
+primary_region = "iad"  # or closest free region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[services]]
+  internal_port = 3000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[mounts]
+  source = "nodecast_data"
+  destination = "/app/data"
+  # Add another for transcode-cache if wanted

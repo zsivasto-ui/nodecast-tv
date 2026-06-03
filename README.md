@@ -90,6 +90,28 @@ You can run nodecast-tv easily using Docker.
 
 The application will be available at `http://localhost:3000`.
 
+### Deploying Online (Free Hosting)
+
+See the full guide in **[DEPLOY.md](./DEPLOY.md)**.
+
+For options **different from Oracle Cloud Always Free**, read **[ALTERNATIVES.md](./ALTERNATIVES.md)** (Render, Fly.io, Koyeb, Northflank, IBM Cloud, GCP, etc. with direct links and notes on FFmpeg limits).
+
+**Quick highlights:**
+- **Best free always-on**: Oracle Cloud Always Free Tier (real VM with Docker + FFmpeg). Public access, persistent storage. Recommended for video streaming.
+- **Easiest test**: Render.com free web service (Docker) or Fly.io.
+- **Nicer experience**: Install Coolify on an Oracle free VM, then deploy from Git like Heroku.
+- Push your local changes (including fixes) to a GitHub fork/repo first.
+- **Important**: Free tiers have CPU/bandwidth limits. Transcoding will be software-only and may be slow for high quality or multiple users. Enable app authentication immediately.
+
+For production use, consider a low-cost VPS ($3–6/mo) for better performance and no sleeping.
+
+Example one-liner for Oracle VM after SSH + Docker:
+```bash
+git clone https://github.com/YOUR_USERNAME/nodecast-tv.git
+cd nodecast-tv
+docker compose up -d --build
+```
+
 
 ### Hardware Acceleration Setup
 
@@ -348,3 +370,7 @@ Under the condition that:
 -   You license any derivative works under the same GPL-3.0 license
 
 See the [LICENSE](LICENSE) file for details.
+
+## About
+
+A self-hosted web application that lets you stream Live TV, Movies, and Series from your Xtream Codes or M3U provider directly in your browser. It's built with performance in mind and handles large libraries smoothly.

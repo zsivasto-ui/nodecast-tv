@@ -70,8 +70,8 @@ class TranscodeSession extends EventEmitter {
             userAgent: options.userAgent || 'Mozilla/5.0',
             seekOffset: options.seekOffset || 0,
             hwEncoder: options.hwEncoder || 'software',
-            maxResolution: options.maxResolution || '1080p',
-            quality: options.quality || 'medium',
+            maxResolution: options.maxResolution || '720p',
+            quality: options.quality || 'low',
             // Upscaling options
             upscaleEnabled: options.upscaleEnabled || false,
             upscaleMethod: options.upscaleMethod || 'hardware', // 'hardware' or 'software'
@@ -209,6 +209,9 @@ class TranscodeSession extends EventEmitter {
         if (this.options.seekOffset > 0) {
             args.push('-ss', String(this.options.seekOffset));
         }
+
+        // Limit threads for low-resource environments (e2-micro etc.)
+        args.push('-threads', '2');
 
         // Map streams
         args.push('-map', '0:v:0');
@@ -542,8 +545,10 @@ class TranscodeSession extends EventEmitter {
         try {
             await fs.access(this.playlistPath);
             const content = await fs.readFile(this.playlistPath, 'utf8');
-            // Check if playlist has at least one segment
-            return content.includes('.ts');
+            // Ready as soon as we have a valid HLS header.
+            // Segments are appended asynchronously by ffmpeg; the player will buffer/wait.
+            // Previously required '.ts' which could cause timeout on slow encodes (e2-micro + VOD).
+            return content.includes('#EXTM3U');
         } catch {
             return false;
         }
@@ -557,6 +562,10 @@ class TranscodeSession extends EventEmitter {
         while (Date.now() - startTime < timeoutMs) {
             if (await this.isPlaylistReady()) {
                 return true;
+            }
+            if (this.status === 'error') {
+                // Fail fast if ffmpeg already errored
+                return false;
             }
             await new Promise(resolve => setTimeout(resolve, 200));
         }

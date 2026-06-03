@@ -210,9 +210,12 @@ class EpgGuide {
         const queryParams = forceRefresh ? '?refresh=1' : `?maxAge=${maxAge}`;
 
         // Load EPG from ALL sources in parallel
+        const token = localStorage.getItem('authToken');
         const fetchPromises = sources.map(async (source) => {
             try {
-                const response = await fetch(`/api/proxy/epg/${source.id}${queryParams}`);
+                const headers = {};
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+                const response = await fetch(`/api/proxy/epg/${source.id}${queryParams}`, { headers });
                 if (!response.ok) throw new Error(`Status ${response.status}`);
                 return await response.json();
             } catch (e) {

@@ -26,6 +26,10 @@ class SeriesPage {
         this.favoriteIds = new Set(); // Track favorite series IDs
         this.showFavoritesOnly = false;
 
+        // Client-side cache to avoid hammering slow provider/VM on every page view
+        this._cache = new Map();
+        this._cacheTTL = 5 * 60 * 1000; // 5 minutes
+
         this.init();
     }
 
@@ -102,6 +106,37 @@ class SeriesPage {
         }
     }
 
+    // Helper to timeout slow API calls (prevents endless spinners on slow providers/low-resource VM)
+    withTimeout(promise, ms = 15000) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out - provider slow or VM overloaded')), ms))
+        ]);
+    }
+
+    _getCache(key) {
+        const entry = this._cache.get(key);
+        if (entry && Date.now() - entry.time < this._cacheTTL) return entry.data;
+        return null;
+    }
+    _setCache(key, data) {
+        this._cache.set(key, { data, time: Date.now() });
+    }
+
+    // Persistent last-good cache in localStorage so slow loads can still show previous results
+    _getLsCache(key) {
+        try {
+            const raw = localStorage.getItem('nc_series_' + key);
+            if (!raw) return null;
+            const e = JSON.parse(raw);
+            if (Date.now() - e.t < 15 * 60 * 1000) return e.data; // 15min
+        } catch (_) {}
+        return null;
+    }
+    _setLsCache(key, data) {
+        try { localStorage.setItem('nc_series_' + key, JSON.stringify({ t: Date.now(), data })); } catch (_) {}
+    }
+
     async loadSources() {
         try {
             const allSources = await API.sources.getAll();
@@ -130,8 +165,8 @@ class SeriesPage {
                 ? this.sources.filter(s => s.id === parseInt(sourceId))
                 : this.sources;
 
-            // Fetch hidden items for each source
-            for (const source of sourcesToLoad) {
+            // Fetch hidden items for each source (parallel)
+            const hiddenPromises = sourcesToLoad.map(async (source) => {
                 try {
                     const hiddenItems = await API.channels.getHidden(source.id);
                     hiddenItems.forEach(h => {
@@ -142,23 +177,28 @@ class SeriesPage {
                 } catch (err) {
                     console.warn(`Failed to load hidden items from source ${source.id}`);
                 }
-            }
+            });
+            await Promise.all(hiddenPromises);
 
-            for (const source of sourcesToLoad) {
-                try {
-                    const cats = await API.proxy.xtream.seriesCategories(source.id);
-                    if (cats && Array.isArray(cats)) {
-                        cats.forEach(c => {
-                            // Skip hidden categories
-                            if (!this.hiddenCategoryIds.has(`${source.id}:${c.category_id}`)) {
-                                this.categories.push({ ...c, sourceId: source.id });
-                            }
-                        });
+            // Load categories in parallel + timeout + cache
+            const catPromises = sourcesToLoad.map(async (source) => {
+                const cacheKey = `scats_${source.id}`;
+                let cats = this._getCache(cacheKey);
+                if (!cats) {
+                    try {
+                        cats = await this.withTimeout(API.proxy.xtream.seriesCategories(source.id), 15000);
+                        if (cats && Array.isArray(cats)) this._setCache(cacheKey, cats);
+                    } catch (err) {
+                        console.warn(`Failed to load series categories from source ${source.id}:`, err.message);
+                        cats = [];
                     }
-                } catch (err) {
-                    console.warn(`Failed to load series categories from source ${source.id}:`, err.message);
                 }
-            }
+                return (cats || [])
+                    .filter(c => !this.hiddenCategoryIds.has(`${source.id}:${c.category_id}`))
+                    .map(c => ({ ...c, sourceId: source.id }));
+            });
+            const catResults = await Promise.all(catPromises);
+            catResults.forEach(cats => this.categories.push(...cats));
 
             // Populate dropdown
             this.categories.forEach(c => {
@@ -174,7 +214,7 @@ class SeriesPage {
 
     async loadSeries() {
         this.isLoading = true;
-        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div style="margin-top:6px;font-size:12px;opacity:.7;">Loading series from provider(s)...</div></div>';
 
         try {
             this.seriesList = [];
@@ -186,44 +226,54 @@ class SeriesPage {
                 ? this.sources.filter(s => s.id === parseInt(sourceId))
                 : this.sources;
 
-            for (const source of sourcesToLoad) {
-                try {
-                    // Parse category if selected
-                    let catId = null;
-                    if (categoryValue) {
-                        const [catSourceId, categoryId] = categoryValue.split(':');
-                        if (parseInt(catSourceId) === source.id) {
-                            catId = categoryId;
-                        } else if (sourceId) {
-                            continue;
-                        }
+            // Load series in parallel + timeout + mem + LS cache to prevent endless spinner
+            const seriesPromises = sourcesToLoad.map(async (source) => {
+                let catId = null;
+                if (categoryValue) {
+                    const [catSourceId, categoryId] = categoryValue.split(':');
+                    if (parseInt(catSourceId) === source.id) {
+                        catId = categoryId;
+                    } else if (sourceId) {
+                        return [];
                     }
-
-                    const series = await API.proxy.xtream.series(source.id, catId);
-                    console.log(`[Series] Source ${source.id}, Category ${catId || 'ALL'}: Got ${series?.length || 0} series`);
-                    if (series && Array.isArray(series)) {
-                        series.forEach(s => {
-                            // Skip series from hidden categories
-                            if (this.hiddenCategoryIds.has(`${source.id}:${s.category_id}`)) {
-                                return;
-                            }
-                            this.seriesList.push({
-                                ...s,
-                                sourceId: source.id,
-                                id: `${source.id}:${s.series_id}`
-                            });
-                        });
-                    }
-                } catch (err) {
-                    console.warn(`Failed to load series from source ${source.id}:`, err.message);
                 }
-            }
+                const cacheKey = `series_${source.id}_${catId || 'all'}`;
+                let series = this._getCache(cacheKey) || this._getLsCache(cacheKey);
+                if (!series) {
+                    try {
+                        series = await this.withTimeout(API.proxy.xtream.series(source.id, catId), 20000);
+                        if (series && Array.isArray(series)) {
+                            this._setCache(cacheKey, series);
+                            this._setLsCache(cacheKey, series);
+                        }
+                        console.log(`[Series] Source ${source.id}, Category ${catId || 'ALL'}: Got ${series?.length || 0} series`);
+                    } catch (err) {
+                        console.warn(`Failed to load series from source ${source.id}:`, err.message);
+                        series = this._getLsCache(cacheKey) || [];
+                    }
+                } else if (!this._getCache(cacheKey) && series) {
+                    this._setCache(cacheKey, series);
+                }
+                return (series || [])
+                    .filter(s => !this.hiddenCategoryIds.has(`${source.id}:${s.category_id}`))
+                    .map(s => ({
+                        ...s,
+                        sourceId: source.id,
+                        id: `${source.id}:${s.series_id}`
+                    }));
+            });
+            const seriesResults = await Promise.all(seriesPromises);
+            seriesResults.forEach(series => this.seriesList.push(...series));
 
             console.log(`[Series] Total loaded: ${this.seriesList.length} series`);
             this.filterAndRender();
         } catch (err) {
             console.error('Error loading series:', err);
-            this.container.innerHTML = '<div class="empty-state"><p>Error loading series</p></div>';
+            if (this.seriesList && this.seriesList.length) {
+                this.filterAndRender();
+            } else {
+                this.container.innerHTML = '<div class="empty-state"><p>Error loading series</p><p class="hint">Try refreshing source or check connection</p></div>';
+            }
         } finally {
             this.isLoading = false;
         }

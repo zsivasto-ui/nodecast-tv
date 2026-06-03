@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: nodecast-tv
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free   # Note: free sleeps after inactivity
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1   # Free tier disk limited, check current
+    # For transcode cache (ephemeral ok on free)

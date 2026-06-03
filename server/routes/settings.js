@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { settings, getDefaultSettings } = require('../db');
 const syncService = require('../services/syncService');
+const { requireAuth } = require('../auth');
+
+// Settings are global (transcoding etc) but require login. Consider requireAdmin for writes in future.
+router.use(requireAuth);
 
 /**
  * Get all settings

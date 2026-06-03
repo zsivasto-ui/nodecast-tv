@@ -427,6 +427,21 @@ class WatchPage {
             console.warn('Could not load settings');
         }
 
+        // Always probe for subtitles + metadata on VOD (Movies/Series).
+        // This enables the same /api/subtitle + <track> mechanism that works for Live TV.
+        // Probe result is cached server-side so it's cheap on repeat.
+        try {
+            const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
+            const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+            const probeInfo = await probeRes.json();
+            this.currentStreamInfo = probeInfo;
+            this.updateQualityBadge();
+            this.injectSubtitleTracks(probeInfo, url);
+            console.log(`[WatchPage] VOD probe (subs): ${probeInfo.subtitles ? probeInfo.subtitles.length : 0} subtitle track(s), video=${probeInfo.video}, audio=${probeInfo.audio}`);
+        } catch (e) {
+            console.warn('[WatchPage] VOD subtitle/metadata probe failed (subs may not be available):', e.message);
+        }
+
         // Detect stream type
         const looksLikeHls = url.includes('.m3u8') || url.includes('m3u8');
         const isRawTs = url.includes('.ts') && !url.includes('.m3u8');
@@ -505,13 +520,14 @@ class WatchPage {
             console.log('[WatchPage] Force Audio Transcode enabled. Starting session (copy)...');
             this.updateTranscodeStatus('transcoding', 'Transcoding (Audio)');
 
-            // Probe to get video codec for HEVC tag handling
+            // Probe to get video codec for HEVC tag handling + subtitles for VOD
             let videoCodec = 'unknown';
             try {
                 const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
                 const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
                 const info = await probeRes.json();
                 videoCodec = info.video;
+                this.injectSubtitleTracks(info, url);
             } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
 
             const playlistUrl = await this.startTranscodeSession(url, {
@@ -573,6 +589,15 @@ class WatchPage {
             maxMaxBufferLength: 60,
             startLevel: -1,
             enableWorker: true,
+            // Attach auth for proxy/stream subresource requests (same reason as VideoPlayer)
+            xhrSetup: (xhr, requestUrl) => {
+                try {
+                    const token = localStorage.getItem('authToken');
+                    if (token) {
+                        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+                    }
+                } catch (e) {}
+            }
         });
 
         this.hls.loadSource(url);
@@ -638,6 +663,9 @@ class WatchPage {
         if (this.video) {
             this.video.pause();
             this.video.src = '';
+            // Remove any injected subtitle tracks
+            const tracks = this.video.querySelectorAll('track');
+            tracks.forEach(t => t.remove());
             this.video.load();
         }
 
@@ -955,6 +983,36 @@ class WatchPage {
         // Update UI
         this.updateCaptionsTracks();
         this.closeCaptionsMenu();
+    }
+
+    /**
+     * Inject external subtitle tracks from probe result (for VOD embedded subs).
+     * Uses /api/subtitle to extract on-demand to WebVTT, just like Live TV.
+     * This enables captions for sources whose HLS manifest does not declare subs.
+     */
+    injectSubtitleTracks(info, originalUrl) {
+        if (!this.video || !info || !info.subtitles || info.subtitles.length === 0) {
+            return;
+        }
+
+        // Clear any stale <track> elements from previous playback
+        const oldTracks = this.video.querySelectorAll('track');
+        oldTracks.forEach(t => t.remove());
+
+        console.log(`[WatchPage] Injecting ${info.subtitles.length} subtitle track(s) for VOD from probe`);
+
+        info.subtitles.forEach(sub => {
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = sub.title || sub.language || `Track ${sub.index}`;
+            track.srclang = sub.language || 'und';
+            track.src = `/api/subtitle?url=${encodeURIComponent(originalUrl)}&index=${sub.index}`;
+            this.video.appendChild(track);
+        });
+
+        // Always refresh the list so the menu is populated the next time user opens it.
+        // (updateCaptionsTracks is cheap and safe to call even when menu is hidden.)
+        this.updateCaptionsTracks();
     }
 
     // === Overlay Auto-Hide ===

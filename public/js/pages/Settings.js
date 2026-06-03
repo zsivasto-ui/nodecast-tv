@@ -309,6 +309,29 @@ class SettingsPage {
         }
     }
 
+    /**
+     * Populate dynamic data in the About tab (version etc)
+     */
+    async loadAboutInfo() {
+        // Version
+        const versionEl = document.getElementById('about-version');
+        if (versionEl) {
+            try {
+                const res = await fetch('/api/version');
+                const data = await res.json();
+                if (data.version) {
+                    versionEl.textContent = data.version;
+                }
+            } catch (e) {
+                // fallback to the navbar badge value if present
+                const badge = document.getElementById('version-badge');
+                if (badge && badge.textContent) {
+                    versionEl.textContent = badge.textContent.replace(/^v/, '');
+                }
+            }
+        }
+    }
+
     initUserManagement() {
         // User tab visibility is handled in show() method
         // when currentUser is available
@@ -532,6 +555,11 @@ class SettingsPage {
         if (tabName === 'transcode') {
             this.loadHardwareInfo();
         }
+
+        // Populate About tab info
+        if (tabName === 'about') {
+            this.loadAboutInfo();
+        }
     }
 
     async show() {
@@ -592,6 +620,9 @@ class SettingsPage {
 
         // Update EPG last refreshed display
         this.updateEpgLastRefreshed();
+
+        // Ensure About tab version is populated (safe to call anytime)
+        this.loadAboutInfo();
     }
 
     /**

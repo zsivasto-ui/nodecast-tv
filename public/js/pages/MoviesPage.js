@@ -22,6 +22,10 @@ class MoviesPage {
         this.favoriteIds = new Set(); // Track favorite movie IDs
         this.showFavoritesOnly = false;
 
+        // Client-side cache to avoid hammering slow provider/VM on every page view
+        this._cache = new Map();
+        this._cacheTTL = 5 * 60 * 1000; // 5 minutes
+
         this.init();
     }
 
@@ -89,6 +93,37 @@ class MoviesPage {
         }
     }
 
+    // Helper to timeout slow API calls (prevents endless spinners on slow providers/low-resource VM)
+    withTimeout(promise, ms = 15000) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out - provider slow or VM overloaded')), ms))
+        ]);
+    }
+
+    _getCache(key) {
+        const entry = this._cache.get(key);
+        if (entry && Date.now() - entry.time < this._cacheTTL) return entry.data;
+        return null;
+    }
+    _setCache(key, data) {
+        this._cache.set(key, { data, time: Date.now() });
+    }
+
+    // Persistent last-good cache in localStorage so slow loads can still show previous results
+    _getLsCache(key) {
+        try {
+            const raw = localStorage.getItem('nc_movies_' + key);
+            if (!raw) return null;
+            const e = JSON.parse(raw);
+            if (Date.now() - e.t < 15 * 60 * 1000) return e.data; // 15min
+        } catch (_) {}
+        return null;
+    }
+    _setLsCache(key, data) {
+        try { localStorage.setItem('nc_movies_' + key, JSON.stringify({ t: Date.now(), data })); } catch (_) {}
+    }
+
 
     async loadSources() {
         try {
@@ -118,8 +153,8 @@ class MoviesPage {
                 ? this.sources.filter(s => s.id === parseInt(sourceId))
                 : this.sources;
 
-            // Fetch hidden items for each source
-            for (const source of sourcesToLoad) {
+            // Fetch hidden items for each source (parallel)
+            const hiddenPromises = sourcesToLoad.map(async (source) => {
                 try {
                     const hiddenItems = await API.channels.getHidden(source.id);
                     hiddenItems.forEach(h => {
@@ -130,23 +165,28 @@ class MoviesPage {
                 } catch (err) {
                     console.warn(`Failed to load hidden items from source ${source.id}`);
                 }
-            }
+            });
+            await Promise.all(hiddenPromises);
 
-            for (const source of sourcesToLoad) {
-                try {
-                    const cats = await API.proxy.xtream.vodCategories(source.id);
-                    if (cats && Array.isArray(cats)) {
-                        cats.forEach(c => {
-                            // Skip hidden categories
-                            if (!this.hiddenCategoryIds.has(`${source.id}:${c.category_id}`)) {
-                                this.categories.push({ ...c, sourceId: source.id });
-                            }
-                        });
+            // Load categories in parallel for speed, with client cache
+            const catPromises = sourcesToLoad.map(async (source) => {
+                const cacheKey = `cats_${source.id}`;
+                let cats = this._getCache(cacheKey);
+                if (!cats) {
+                    try {
+                        cats = await this.withTimeout(API.proxy.xtream.vodCategories(source.id), 15000);
+                        if (cats && Array.isArray(cats)) this._setCache(cacheKey, cats);
+                    } catch (err) {
+                        console.warn(`Failed to load categories from source ${source.id}:`, err.message);
+                        cats = [];
                     }
-                } catch (err) {
-                    console.warn(`Failed to load categories from source ${source.id}:`, err.message);
                 }
-            }
+                return (cats || [])
+                    .filter(c => !this.hiddenCategoryIds.has(`${source.id}:${c.category_id}`))
+                    .map(c => ({ ...c, sourceId: source.id }));
+            });
+            const catResults = await Promise.all(catPromises);
+            catResults.forEach(cats => this.categories.push(...cats));
 
             // Populate dropdown
             this.categories.forEach(c => {
@@ -162,7 +202,7 @@ class MoviesPage {
 
     async loadMovies() {
         this.isLoading = true;
-        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
+        this.container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><div style="margin-top:6px;font-size:12px;opacity:.7;">Loading movies from provider(s)...</div></div>';
 
         try {
             this.movies = [];
@@ -174,44 +214,57 @@ class MoviesPage {
                 ? this.sources.filter(s => s.id === parseInt(sourceId))
                 : this.sources;
 
-            for (const source of sourcesToLoad) {
-                try {
-                    // Parse category if selected
-                    let catId = null;
-                    if (categoryValue) {
-                        const [catSourceId, categoryId] = categoryValue.split(':');
-                        if (parseInt(catSourceId) === source.id) {
-                            catId = categoryId;
-                        } else if (sourceId) {
-                            continue; // Skip this source if category is from different source
-                        }
+            // Load movies in parallel + timeout + mem + LS cache to prevent endless spinner
+            const moviePromises = sourcesToLoad.map(async (source) => {
+                let catId = null;
+                if (categoryValue) {
+                    const [catSourceId, categoryId] = categoryValue.split(':');
+                    if (parseInt(catSourceId) === source.id) {
+                        catId = categoryId;
+                    } else if (sourceId) {
+                        return []; // skip
                     }
-
-                    const movies = await API.proxy.xtream.vodStreams(source.id, catId);
-                    console.log(`[Movies] Source ${source.id}, Category ${catId || 'ALL'}: Got ${movies?.length || 0} movies`);
-                    if (movies && Array.isArray(movies)) {
-                        movies.forEach(m => {
-                            // Skip movies from hidden categories
-                            if (this.hiddenCategoryIds && this.hiddenCategoryIds.has(`${source.id}:${m.category_id}`)) {
-                                return;
-                            }
-                            this.movies.push({
-                                ...m,
-                                sourceId: source.id,
-                                id: `${source.id}:${m.stream_id}`
-                            });
-                        });
-                    }
-                } catch (err) {
-                    console.warn(`Failed to load movies from source ${source.id}:`, err.message);
                 }
-            }
+                const cacheKey = `movies_${source.id}_${catId || 'all'}`;
+                let movies = this._getCache(cacheKey) || this._getLsCache(cacheKey);
+                if (!movies) {
+                    try {
+                        movies = await this.withTimeout(API.proxy.xtream.vodStreams(source.id, catId), 20000);
+                        if (movies && Array.isArray(movies)) {
+                            this._setCache(cacheKey, movies);
+                            this._setLsCache(cacheKey, movies);
+                        }
+                        console.log(`[Movies] Source ${source.id}, Category ${catId || 'ALL'}: Got ${movies?.length || 0} movies`);
+                    } catch (err) {
+                        console.warn(`Failed to load movies from source ${source.id}:`, err.message);
+                        // last resort: use any LS cache even if older
+                        movies = this._getLsCache(cacheKey) || [];
+                    }
+                } else if (!this._getCache(cacheKey) && movies) {
+                    // promote LS hit to mem
+                    this._setCache(cacheKey, movies);
+                }
+                return (movies || [])
+                    .filter(m => !(this.hiddenCategoryIds && this.hiddenCategoryIds.has(`${source.id}:${m.category_id}`)))
+                    .map(m => ({
+                        ...m,
+                        sourceId: source.id,
+                        id: `${source.id}:${m.stream_id}`
+                    }));
+            });
+            const movieResults = await Promise.all(moviePromises);
+            movieResults.forEach(movies => this.movies.push(...movies));
 
             console.log(`[Movies] Total loaded: ${this.movies.length} movies`);
             this.filterAndRender();
         } catch (err) {
             console.error('Error loading movies:', err);
-            this.container.innerHTML = '<div class="empty-state"><p>Error loading movies</p></div>';
+            // try to render from any prior data we have in mem
+            if (this.movies && this.movies.length) {
+                this.filterAndRender();
+            } else {
+                this.container.innerHTML = '<div class="empty-state"><p>Error loading movies</p><p class="hint">Try refreshing source or check connection</p></div>';
+            }
         } finally {
             this.isLoading = false;
         }

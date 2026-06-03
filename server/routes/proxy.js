@@ -12,6 +12,71 @@ const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { Readable } = require('stream');
+const { requireAuth } = require('../auth');
+
+/**
+ * Public image proxy (must be before requireAuth).
+ * <img> tags cannot send Authorization: Bearer headers, so this endpoint must not require auth.
+ * Images (channel logos, VOD posters from TMDB/providers) are public content; the proxy mainly
+ * solves mixed-content (http images on https pages) and CORS.
+ */
+router.get('/image', async (req, res) => {
+    try {
+        const { url } = req.query;
+        if (!url) {
+            return res.status(400).json({ error: 'URL required' });
+        }
+
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/*,*/*;q=0.8'
+            }
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).send('Failed to fetch image');
+        }
+
+        const contentType = response.headers.get('content-type') || 'image/png';
+        res.set('Content-Type', contentType);
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+
+        // Efficiently pipe the response body
+        if (response.body) {
+            const stream = Readable.from(response.body);
+            stream.pipe(res);
+        } else {
+            res.end();
+        }
+
+    } catch (err) {
+        console.error('Image proxy error:', err.message);
+        res.status(500).send('Image proxy error');
+    }
+});
+
+// Apply auth to most routes, but skip for subresource-friendly proxies that are loaded
+// via <img>, video.src, hls.loadSource, or raw fetch() in components that don't attach headers.
+// (The target URLs for Xtream contain the provider creds; our proxy mainly solves CORS/mixed-content.)
+router.use((req, res, next) => {
+    const p = req.path || '';
+    const method = req.method;
+    // Public for subresource loads (img, video/hls src, raw fetch in EpgGuide without header):
+    // - /image (posters/logos)
+    // - /stream (CORS bypass for provider HLS/direct streams)
+    // - GET /epg/:id (the main EPG data fetch; the one registered first doesn't need user)
+    // Other /epg/* (POST channels etc) and everything else still require login.
+    if (
+        p === '/image' ||
+        p === '/stream' ||
+        (method === 'GET' && /^\/epg\/\d+$/.test(p))
+    ) {
+        return next();
+    }
+    return requireAuth(req, res, next);
+});
 
 // Default cache max age in hours
 const DEFAULT_MAX_AGE_HOURS = 24;
@@ -83,7 +148,8 @@ function getStreamsFromDb(sourceId, type, categoryId = null, includeHidden = fal
 // Login / Authenticate
 router.get('/xtream/:sourceId', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source || source.type !== 'xtream') return res.status(404).send('Source not found');
 
         // Proxy auth check to upstream to ensure credentials are still valid
@@ -185,7 +251,8 @@ router.get('/xtream/:sourceId/series', async (req, res) => {
 // Proxy series info request
 router.get('/xtream/:sourceId/series_info', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source) return res.status(404).send('Source not found');
 
         const seriesId = req.query.series_id;
@@ -207,7 +274,8 @@ router.get('/xtream/:sourceId/series_info', async (req, res) => {
 // VOD Info
 router.get('/xtream/:sourceId/vod_info', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source) return res.status(404).send('Source not found');
 
         const vodId = req.query.vod_id;
@@ -230,7 +298,8 @@ router.get('/xtream/:sourceId/vod_info', async (req, res) => {
 // Returns the direct stream URL for a given stream ID
 router.get('/xtream/:sourceId/stream/:streamId/:type', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source || source.type !== 'xtream') {
             return res.status(404).json({ error: 'Xtream source not found' });
         }
@@ -393,7 +462,8 @@ router.delete('/cache/:sourceId', (req, res) => {
 router.get('/xtream/:sourceId/:action', async (req, res) => {
     try {
         const sourceId = req.params.sourceId;
-        const source = await sources.getById(sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(sourceId, userId);
         if (!source || source.type !== 'xtream') {
             return res.status(404).json({ error: 'Xtream source not found' });
         }
@@ -478,7 +548,8 @@ router.get('/xtream/:sourceId/:action', async (req, res) => {
  */
 router.get('/xtream/:sourceId/stream/:streamId/:type?', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source || source.type !== 'xtream') {
             return res.status(404).json({ error: 'Xtream source not found' });
         }
@@ -505,7 +576,8 @@ router.get('/xtream/:sourceId/stream/:streamId/:type?', async (req, res) => {
 router.get('/epg/:sourceId', async (req, res) => {
     try {
         const sourceId = req.params.sourceId;
-        const source = await sources.getById(sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(sourceId, userId);
         if (!source || (source.type !== 'epg' && source.type !== 'xtream')) {
             return res.status(404).json({ error: 'Valid EPG source not found' });
         }
@@ -567,7 +639,8 @@ router.delete('/epg/:sourceId/cache', (req, res) => {
  */
 router.post('/epg/:sourceId/channels', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.sourceId);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.sourceId, userId);
         if (!source || source.type !== 'epg') {
             return res.status(404).json({ error: 'EPG source not found' });
         }
@@ -773,50 +846,6 @@ router.get('/stream', async (req, res) => {
     // All retries failed
     if (!res.headersSent) {
         res.status(500).json({ error: lastError?.message || 'Stream proxy failed after retries' });
-    }
-});
-
-/**
- * Proxy images (channel logos, posters)
- * Fixes mixed content errors when loading HTTP images on HTTPS pages
- * GET /api/proxy/image?url=...
- */
-router.get('/image', async (req, res) => {
-    try {
-        const { url } = req.query;
-        if (!url) {
-            return res.status(400).json({ error: 'URL required' });
-        }
-
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/*,*/*;q=0.8'
-            }
-        });
-
-        if (!response.ok) {
-            return res.status(response.status).send('Failed to fetch image');
-        }
-
-        const contentType = response.headers.get('content-type') || 'image/png';
-        res.set('Content-Type', contentType);
-        res.set('Access-Control-Allow-Origin', '*');
-        res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
-
-        // Efficiently pipe the response body
-        if (response.body) {
-            // response.body is an AsyncIterable in standard fetch/undici
-            // Readable.from converts it to a Node.js Readable stream
-            const stream = Readable.from(response.body);
-            stream.pipe(res);
-        } else {
-            res.end();
-        }
-
-    } catch (err) {
-        console.error('Image proxy error:', err.message);
-        res.status(500).send('Image proxy error');
     }
 });
 

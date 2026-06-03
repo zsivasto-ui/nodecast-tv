@@ -142,7 +142,20 @@ class VideoPlayer {
             // Caption/Subtitle settings
             enableCEA708Captions: true,    // Enable CEA-708 closed captions
             enableWebVTT: true,            // Enable WebVTT subtitles
-            renderTextTracksNatively: true // Use native browser rendering for text tracks
+            renderTextTracksNatively: true, // Use native browser rendering for text tracks
+
+            // Attach auth token for internal XHRs (manifest + segment fetches).
+            // This is needed because video.src / hls.loadSource() are subresource requests;
+            // the browser does not automatically forward the Bearer token from localStorage.
+            // Allows /api/proxy/stream (and future authed proxies) to work for CORS fallback.
+            xhrSetup: (xhr, requestUrl) => {
+                try {
+                    const token = localStorage.getItem('authToken');
+                    if (token) {
+                        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+                    }
+                } catch (e) {}
+            }
         };
     }
 
@@ -981,7 +994,7 @@ class VideoPlayer {
                     if (this.hls) {
                         this.hls.destroy();
                     }
-                    this.hls = new Hls();
+                    this.hls = new Hls(this.getHlsConfig());
                     this.hls.loadSource(playlistUrl);
                     this.hls.attachMedia(this.video);
                     this.hls.on(Hls.Events.MANIFEST_PARSED, () => {

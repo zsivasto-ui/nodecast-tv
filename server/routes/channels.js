@@ -1,6 +1,28 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/sqlite');
+const { requireAuth } = require('../auth');
+const { sources } = require('../db');
+
+// All channels/hidden management requires auth (prevents unauth tampering with global hidden state)
+router.use(requireAuth);
+
+// Ensure the sourceId (if provided) belongs to the current user (or is legacy unowned source)
+async function ensureSourceAccess(req, res, sourceIdRaw) {
+  if (sourceIdRaw == null) return true;
+  const sourceId = parseInt(sourceIdRaw);
+  if (Number.isNaN(sourceId)) {
+    res.status(400).json({ error: 'Invalid sourceId' });
+    return false;
+  }
+  const userId = req.user.id;
+  const src = await sources.getById(sourceId, userId);
+  if (!src) {
+    res.status(404).json({ error: 'Source not found or access denied' });
+    return false;
+  }
+  return true;
+}
 
 // Helper to map API item types to DB types and tables
 function mapItemType(apiType) {
@@ -19,6 +41,7 @@ function mapItemType(apiType) {
 router.get('/hidden', async (req, res) => {
     try {
         const { sourceId } = req.query;
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
         const db = getDb();
 
         let hidden = [];
@@ -72,6 +95,7 @@ router.get('/hidden', async (req, res) => {
 router.post('/hide', async (req, res) => {
     try {
         const { sourceId, itemType, itemId } = req.body;
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
         const mapping = mapItemType(itemType);
 
         if (!mapping) return res.status(400).json({ error: 'Invalid item type' });
@@ -98,6 +122,7 @@ router.post('/hide', async (req, res) => {
 router.post('/show', async (req, res) => {
     try {
         const { sourceId, itemType, itemId } = req.body;
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
         const mapping = mapItemType(itemType);
 
         if (!mapping) return res.status(400).json({ error: 'Invalid item type' });
@@ -124,6 +149,7 @@ router.post('/show', async (req, res) => {
 router.get('/hidden/check', async (req, res) => {
     try {
         const { sourceId, itemType, itemId } = req.query;
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
         const mapping = mapItemType(itemType);
         if (!mapping) return res.json({ hidden: false });
 
@@ -147,6 +173,12 @@ router.post('/hide/bulk', async (req, res) => {
     try {
         const { items } = req.body;
         if (!Array.isArray(items)) return res.status(400).json({ error: 'items array required' });
+
+        // Validate access to all distinct sources in the batch
+        const uniqueSources = [...new Set(items.map(i => i.sourceId).filter(Boolean))];
+        for (const sid of uniqueSources) {
+            if (!(await ensureSourceAccess(req, res, sid))) return;
+        }
 
         const db = getDb();
 
@@ -191,6 +223,12 @@ router.post('/show/bulk', async (req, res) => {
         const { items } = req.body;
         if (!Array.isArray(items)) return res.status(400).json({ error: 'items array required' });
 
+        // Validate access to all distinct sources in the batch
+        const uniqueSources = [...new Set(items.map(i => i.sourceId).filter(Boolean))];
+        for (const sid of uniqueSources) {
+            if (!(await ensureSourceAccess(req, res, sid))) return;
+        }
+
         const db = getDb();
 
         // Prepare statements once
@@ -233,6 +271,7 @@ router.post('/show/all', async (req, res) => {
     try {
         const { sourceId, contentType } = req.body;
         if (!sourceId) return res.status(400).json({ error: 'sourceId required' });
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
 
         const db = getDb();
         let catCount = 0;
@@ -263,6 +302,7 @@ router.post('/hide/all', async (req, res) => {
     try {
         const { sourceId, contentType } = req.body;
         if (!sourceId) return res.status(400).json({ error: 'sourceId required' });
+        if (!(await ensureSourceAccess(req, res, sourceId))) return;
 
         const db = getDb();
         let catCount = 0;
@@ -297,9 +337,20 @@ router.get('/recent', async (req, res) => {
         }
 
         const db = getDb();
+
+        // Scope to sources the current user can access (per-user sources + legacy global)
+        const userId = req.user.id;
+        const userSources = await sources.getAll(userId);
+        const userSourceIds = userSources.map(s => s.id);
+        if (userSourceIds.length === 0) {
+            return res.json([]);
+        }
+
+        const placeholders = userSourceIds.map(() => '?').join(',');
         const recentItems = db.prepare(`
             SELECT * FROM playlist_items p
-            WHERE p.type = ? 
+            WHERE p.source_id IN (${placeholders})
+              AND p.type = ? 
               AND p.is_hidden = 0
               AND NOT EXISTS (
                   SELECT 1 FROM categories c 
@@ -310,7 +361,7 @@ router.get('/recent', async (req, res) => {
               )
             ORDER BY p.added_at DESC
             LIMIT ?
-        `).all(type, parseInt(limit));
+        `).all(...userSourceIds, type, parseInt(limit));
 
         // Parse JSON data for each item
         const formatted = recentItems.map(item => ({

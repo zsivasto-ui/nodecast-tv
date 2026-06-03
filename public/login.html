@@ -262,6 +262,7 @@
                 }
             } catch (err) {
                 console.error('Error checking setup status:', err);
+                isSetupMode = false; // default to login mode on error
             }
         }
 
@@ -312,8 +313,15 @@
             }
         });
 
-        // Check setup status on load
-        checkSetupRequired();
+        // Check setup status on load (await to avoid race with submit)
+        (async () => {
+            const submitBtn = document.getElementById('submit-btn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Loading...';
+            await checkSetupRequired();
+            submitBtn.disabled = false;
+            submitBtn.textContent = isSetupMode ? 'Create Account' : 'Sign In';
+        })();
     </script>
 </body>
 

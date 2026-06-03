@@ -5,11 +5,16 @@ const { getDb } = require('../db/sqlite');
 const xtreamApi = require('../services/xtreamApi');
 const syncService = require('../services/syncService');
 const m3uParser = require('../services/m3uParser');
+const { requireAuth } = require('../auth');
 
-// Get all sources
+// All source management is per authenticated user account
+router.use(requireAuth);
+
+// Get all sources (scoped to current user)
 router.get('/', async (req, res) => {
     try {
-        const allSources = await sources.getAll();
+        const userId = req.user.id;
+        const allSources = await sources.getAll(userId);
         // Don't expose passwords in list view
         const sanitized = allSources.map(s => ({
             ...s,
@@ -35,10 +40,11 @@ router.get('/status', async (req, res) => {
     }
 });
 
-// Get sources by type
+// Get sources by type (scoped to current user)
 router.get('/type/:type', async (req, res) => {
     try {
-        const typeSources = await sources.getByType(req.params.type);
+        const userId = req.user.id;
+        const typeSources = await sources.getByType(req.params.type, userId);
         res.json(typeSources);
     } catch (err) {
         console.error('Error getting sources by type:', err);
@@ -46,10 +52,11 @@ router.get('/type/:type', async (req, res) => {
     }
 });
 
-// Get single source
+// Get single source (scoped to current user)
 router.get('/:id', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.id);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.id, userId);
         if (!source) {
             return res.status(404).json({ error: 'Source not found' });
         }
@@ -60,7 +67,7 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// Create source
+// Create source (associated with current user account)
 router.post('/', async (req, res) => {
     try {
         const { type, name, url, username, password } = req.body;
@@ -73,7 +80,8 @@ router.post('/', async (req, res) => {
             return res.status(400).json({ error: 'Invalid source type' });
         }
 
-        const source = await sources.create({ type, name, url, username, password });
+        const userId = req.user.id;
+        const source = await sources.create({ type, name, url, username, password, userId });
         // Trigger Sync
         syncService.syncSource(source.id).catch(console.error);
         res.status(201).json(source);
@@ -83,10 +91,11 @@ router.post('/', async (req, res) => {
     }
 });
 
-// Update source
+// Update source (only own)
 router.put('/:id', async (req, res) => {
     try {
-        const existing = await sources.getById(req.params.id);
+        const userId = req.user.id;
+        const existing = await sources.getById(req.params.id, userId);
         if (!existing) {
             return res.status(404).json({ error: 'Source not found' });
         }
@@ -107,11 +116,12 @@ router.put('/:id', async (req, res) => {
     }
 });
 
-// Delete source
+// Delete source (only own)
 router.delete('/:id', async (req, res) => {
     try {
         const sourceId = parseInt(req.params.id);
-        const existing = await sources.getById(sourceId);
+        const userId = req.user.id;
+        const existing = await sources.getById(sourceId, userId);
         if (!existing) {
             return res.status(404).json({ error: 'Source not found' });
         }
@@ -140,9 +150,14 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// Toggle source enabled/disabled
+// Toggle source enabled/disabled (only own)
 router.post('/:id/toggle', async (req, res) => {
     try {
+        const userId = req.user.id;
+        const existing = await sources.getById(req.params.id, userId);
+        if (!existing) {
+            return res.status(404).json({ error: 'Source not found' });
+        }
         const updated = await sources.toggleEnabled(req.params.id);
         if (!updated) {
             return res.status(404).json({ error: 'Source not found' });
@@ -160,11 +175,12 @@ router.post('/:id/toggle', async (req, res) => {
     }
 });
 
-// Manual Sync
+// Manual Sync (only own)
 router.post('/:id/sync', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const source = await sources.getById(id);
+        const userId = req.user.id;
+        const source = await sources.getById(id, userId);
         if (!source) return res.status(404).json({ error: 'Source not found' });
 
         // Trigger sync (async)
@@ -177,10 +193,11 @@ router.post('/:id/sync', async (req, res) => {
     }
 });
 
-// Test source connection
+// Test source connection (only own)
 router.post('/:id/test', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.id);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.id, userId);
         if (!source) {
             return res.status(404).json({ error: 'Source not found' });
         }
@@ -237,10 +254,11 @@ router.post('/estimate', async (req, res) => {
     }
 });
 
-// Estimate by source ID (for existing sources)
+// Estimate by source ID (for existing sources, only own)
 router.get('/:id/estimate', async (req, res) => {
     try {
-        const source = await sources.getById(req.params.id);
+        const userId = req.user.id;
+        const source = await sources.getById(req.params.id, userId);
         if (!source) {
             return res.status(404).json({ error: 'Source not found' });
         }
@@ -265,7 +283,7 @@ router.get('/:id/estimate', async (req, res) => {
     }
 });
 
-// Global Sync - sync all enabled sources
+// Global Sync - sync all enabled sources (admin or any logged in ok, since server side)
 router.post('/sync-all', async (req, res) => {
     try {
         // Trigger global sync (async - don't wait for completion)

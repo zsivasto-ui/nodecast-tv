@@ -73,9 +73,9 @@ function getDefaultSettings() {
     userAgentPreset: 'chrome',    // chrome | vlc | tivimate | custom
     userAgentCustom: '',          // Custom UA string when preset is 'custom'
     // Transcoding settings
-    hwEncoder: 'auto',            // auto | nvenc | amf | qsv | vaapi | software
-    maxResolution: '1080p',       // 4k | 1080p | 720p | 480p
-    quality: 'medium',            // high | medium | low
+    hwEncoder: 'software',        // auto | nvenc | amf | qsv | vaapi | software
+    maxResolution: '720p',        // 4k | 1080p | 720p | 480p  (lowered for free-tier VMs)
+    quality: 'low',               // high | medium | low       (lowered for free-tier VMs)
     audioMixPreset: 'auto',       // auto | itu | night | cinematic | passthrough
     // Probe cache settings  
     probeCacheTTL: 300,           // 5 minutes for URL probe cache
@@ -129,19 +129,33 @@ async function saveDb(data) {
 
 // Source CRUD operations
 const sources = {
-  async getAll() {
+  async getAll(userId = null) {
     const db = await loadDb();
-    return db.sources;
+    let list = db.sources || [];
+    if (userId != null) {
+      // Per-user sources: show own or unowned (for backward compat with global sources)
+      list = list.filter(s => !s.userId || s.userId === userId);
+    }
+    return list;
   },
 
-  async getById(id) {
+  async getById(id, userId = null) {
     const db = await loadDb();
-    return db.sources.find(s => s.id === parseInt(id));
+    const source = (db.sources || []).find(s => s.id === parseInt(id));
+    if (!source) return null;
+    if (userId != null && source.userId != null && source.userId !== userId) {
+      return null; // not owned
+    }
+    return source;
   },
 
-  async getByType(type) {
+  async getByType(type, userId = null) {
     const db = await loadDb();
-    return db.sources.filter(s => s.type === type && s.enabled);
+    let list = (db.sources || []).filter(s => s.type === type && s.enabled);
+    if (userId != null) {
+      list = list.filter(s => !s.userId || s.userId === userId);
+    }
+    return list;
   },
 
   async create(source) {
@@ -153,6 +167,7 @@ const sources = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+    if (!db.sources) db.sources = [];
     db.sources.push(newSource);
     await saveDb(db);
     return newSource;
