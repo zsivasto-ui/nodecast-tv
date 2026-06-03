@@ -1,11 +1,12 @@
 services:
   nodecast-tv:
-    # For production on your own server/Oracle etc, build locally or from your fork:
-    # build: .
-    # Or use the official image (may lag behind your local fixes):
-    image: ghcr.io/technomancer702/nodecast-tv:latest
-    # To build from your GitHub fork instead of pulling:
-    # build: https://github.com/YOUR_USERNAME/nodecast-tv.git#main
+    # Recommended for Oracle Always Free, your own server, or custom forks:
+    build: .
+    # Alternative (if you want the pre-built image from the main repo):
+    # image: ghcr.io/technomancer702/nodecast-tv:latest
+    #
+    # For GitHub-based build (no need to git clone on server):
+    # build: https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git#main
     container_name: nodecast-tv
     ports:
       - "3000:3000"
@@ -16,5 +17,5 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-    # For Oracle free / low resource: software encode is default and recommended
-    # Add more env as needed (see .env.example)
+    # For Oracle free / low-resource tiers: software encoding + lower res is strongly recommended
+    # (the app now defaults to this in code, but you can tune in Settings → Transcoding after first login)
