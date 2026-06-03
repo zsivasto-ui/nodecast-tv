@@ -65,9 +65,9 @@ docker compose version
 After SSHing into the fresh Ubuntu VM, run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/nodecast-tv/main/oracle-cloudflare-deploy.sh -o deploy.sh
+curl -fsSL https://raw.githubusercontent.com/zsivasto-ui/nodecast-tv/main/oracle-cloudflare-deploy.sh -o deploy.sh
 chmod +x deploy.sh
-./deploy.sh https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git [optional-tunnel-name]
+./deploy.sh https://github.com/zsivasto-ui/nodecast-tv.git [optional-tunnel-name]
 ```
 
 This script handles Docker install, cloning your repo, building + starting the app, **and** launching the Cloudflare Tunnel setup.

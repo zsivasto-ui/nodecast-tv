@@ -23,7 +23,7 @@
 
 set -e
 
-GITHUB_REPO=${1:-"https://github.com/technomancer702/nodecast-tv.git"}
+GITHUB_REPO=${1:-"https://github.com/zsivasto-ui/nodecast-tv.git"}
 TUNNEL_NAME=${2:-"nodecast-tv"}
 
 echo "=== nodecast-tv Oracle + Cloudflare Deployment ==="

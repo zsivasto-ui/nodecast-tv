@@ -5,20 +5,20 @@ This file was prepared for you in the workspace.
 ## Prerequisites (do this first on your local machine)
 
 1. On GitHub.com:
-   - Fork https://github.com/technomancer702/nodecast-tv to your account, OR create a new empty repo called "nodecast-tv".
+   - Fork https://github.com/zsivasto-ui/nodecast-tv to your account, OR create a new empty repo called "nodecast-tv".
 
 2. In this terminal (the one with the nodecast-tv folder), push your local work (includes all recent improvements + the deploy scripts):
 
 ```bash
-# Replace YOUR_GITHUB_USERNAME with yours
-git remote add myfork https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git
+# Use your own fork URL if different
+git remote add myfork https://github.com/zsivasto-ui/nodecast-tv.git
 
 # Authenticate if needed (use GitHub token or SSH key)
 git push -u myfork main
 ```
 
 After this, your repo URL will be:
-https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv
+https://github.com/zsivasto-ui/nodecast-tv
 
 ## Step 1: Create the Oracle Cloud Always Free VM
 
@@ -53,11 +53,11 @@ Then run these three commands (copy-paste):
 
 ```bash
 # Download the all-in-one deploy script
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/nodecast-tv/main/oracle-cloudflare-deploy.sh -o deploy.sh
+curl -fsSL https://raw.githubusercontent.com/zsivasto-ui/nodecast-tv/main/oracle-cloudflare-deploy.sh -o deploy.sh
 
 # Make executable and run (pass your GitHub repo URL)
 chmod +x deploy.sh
-./deploy.sh https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git nodecast-tv
+./deploy.sh https://github.com/zsivasto-ui/nodecast-tv.git nodecast-tv
 ```
 
 The script will:

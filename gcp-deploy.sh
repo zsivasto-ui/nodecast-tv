@@ -97,7 +97,7 @@ EOF
   echo "gcloud compute ssh $VM --zone=$ZONE"
   echo ""
   echo "Inside the VM, run these commands:"
-  echo "  git clone https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git /app || true"
+  echo "  git clone https://github.com/zsivasto-ui/nodecast-tv.git /app || true"
   echo "  cd /app"
   echo "  sudo docker build -t nodecast ."
   echo "  sudo docker run -d --name nodecast -p 80:3000 -v /mnt/data/data:/app/data --restart unless-stopped nodecast"
