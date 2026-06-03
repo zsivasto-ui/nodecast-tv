@@ -60,17 +60,26 @@ docker compose version
 
 ### Step 4: Deploy the app
 
-**Option A: Simple docker compose (quick)**
+**Easiest: Use the one-command deploy script (recommended)**
+
+After SSHing into the fresh Ubuntu VM, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/nodecast-tv/main/oracle-cloudflare-deploy.sh -o deploy.sh
+chmod +x deploy.sh
+./deploy.sh https://github.com/YOUR_GITHUB_USERNAME/nodecast-tv.git [optional-tunnel-name]
+```
+
+This script handles Docker install, cloning your repo, building + starting the app, **and** launching the Cloudflare Tunnel setup.
+
+**Manual Option (docker compose):**
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/nodecast-tv.git   # or your fork
 cd nodecast-tv
-
-# Edit docker-compose.yml for production
-nano docker-compose.yml
 ```
 
-Example improved `docker-compose.yml` (use this):
+(Then continue with docker compose commands as before.)
 ```yaml
 services:
   nodecast-tv:
