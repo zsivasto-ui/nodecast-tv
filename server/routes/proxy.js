@@ -681,19 +681,39 @@ router.get('/stream', async (req, res) => {
                 return res.status(400).json({ error: 'URL required' });
             }
 
+            // Load app settings for User-Agent (respect user's choice: VLC, TiviMate etc often work better with IPTV providers)
+            let settings = {};
+            try {
+                const db = require('../db');
+                settings = await db.settings.get();
+            } catch (e) { /* ignore */ }
+
+            const uaPreset = settings.userAgentPreset || 'chrome';
+            const uaCustom = settings.userAgentCustom || '';
+            let userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+            if (uaPreset === 'vlc') userAgent = 'VLC/3.0.20 LibVLC/3.0.20';
+            else if (uaPreset === 'tivimate') userAgent = 'TiviMate/5.0.0';
+            else if (uaPreset === 'custom' && uaCustom) userAgent = uaCustom;
+
             // Forward some headers to be more "transparent" back to the origin
             // Pluto TV uses multiple domains for content delivery
             const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
             const isPluto = plutoDomains.some(domain => url.includes(domain));
 
             const headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': userAgent,
                 'Accept': '*/*',
                 'Accept-Language': 'en-US,en;q=0.9',
-                // Using https and matching the origin of the request
-                'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
-                'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
             };
+
+            // Only set Origin/Referer for known picky providers like Pluto; many IPTV providers block or 403 on mismatched referer/origin
+            if (isPluto) {
+                headers['Origin'] = 'https://pluto.tv';
+                headers['Referer'] = 'https://pluto.tv/';
+            } else {
+                // For generic IPTV, avoid setting origin/referer that might cause 403
+                // Some providers require no extra headers at all
+            }
 
             // Forward Range header for video seeking support
             const rangeHeader = req.get('range');
@@ -813,23 +833,21 @@ router.get('/stream', async (req, res) => {
                 return res.send(manifest);
             }
 
-            // Binary content (Video Segment or Key): Collect and send
-            console.log(`[Proxy] Serving binary content (${contentType})`);
+            // Binary content (Video Segment, MP4, MKV, etc.): Stream without buffering entire file in memory.
+            // Critical for large VOD files (hundreds of MB+) to avoid OOM, timeouts, and 502s on small VMs.
+            console.log(`[Proxy] Streaming binary content (${contentType})`);
             res.set('Content-Type', contentType || 'application/octet-stream');
 
-            // For small files (like encryption keys), collect all data and send at once
-            // This ensures proper Content-Length and response completion
-            const chunks = [firstChunk];
+            // Write the first chunk we already peeked (for non-HLS detection)
+            res.write(firstChunk);
+
+            // Stream the rest of the body chunks as they arrive (supports progressive download / seeking via Range)
             let result = await iterator.next();
             while (!result.done) {
-                chunks.push(Buffer.from(result.value));
+                res.write(Buffer.from(result.value));
                 result = await iterator.next();
             }
-            const fullContent = Buffer.concat(chunks);
-
-            // Set Content-Length for proper client handling
-            res.set('Content-Length', fullContent.length);
-            res.send(fullContent);
+            res.end();
             return; // Success - exit the retry loop
 
         } catch (err) {

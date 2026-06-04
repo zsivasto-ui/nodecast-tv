@@ -329,7 +329,7 @@ class WatchPage {
     async startTranscodeSession(url, options = {}) {
         try {
             console.log('[WatchPage] Starting HLS transcode session...', options);
-            const res = await fetch('/api/transcode/session', {
+            const res = await API.fetchWithAuth('/api/transcode/session', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -338,12 +338,20 @@ class WatchPage {
                     ...options
                 })
             });
-            if (!res.ok) throw new Error('Failed to start session');
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                if (data.code === 'OVERLOADED' || res.status === 503) {
+                    this.showError('Server is overloaded (free tier VM limit). Disable "Auto Transcode (Smart)" and "Force Audio Transcode" in Settings. The app now falls back to direct play (audio may not work for eac3).');
+                    throw new Error('Transcode overloaded');
+                }
+                throw new Error(data.error || 'Failed to start session');
+            }
             const session = await res.json();
             this.currentSessionId = session.sessionId;
             return session.playlistUrl;
         } catch (err) {
             console.error('[WatchPage] Session start failed:', err);
+            if (err.message.includes('overloaded')) throw err;
             // Fallback to direct transcode if session fails
             return `/api/transcode?url=${encodeURIComponent(url)}`;
         }
@@ -357,7 +365,7 @@ class WatchPage {
             console.log('[WatchPage] Stopping transcode session:', this.currentSessionId);
             try {
                 // Fire and forget cleanup
-                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
+                API.fetchWithAuth(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
             } catch (err) {
                 console.error('Failed to stop session:', err);
             }
@@ -432,7 +440,7 @@ class WatchPage {
         // Probe result is cached server-side so it's cheap on repeat.
         try {
             const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
-            const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+            const probeRes = await API.fetchWithAuth(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
             const probeInfo = await probeRes.json();
             this.currentStreamInfo = probeInfo;
             this.updateQualityBadge();
@@ -441,6 +449,14 @@ class WatchPage {
         } catch (e) {
             console.warn('[WatchPage] VOD subtitle/metadata probe failed (subs may not be available):', e.message);
         }
+
+        // Compute if we need to proxy *playback* (client video element loads via our /proxy to avoid mixed content/CORS).
+        // Server-side transcode/remux always receive the original source URL.
+        const proxyRequiredDomains = ['pluto.tv'];
+        const isHttpsPage = location.protocol === 'https:';
+        const isInsecureUrl = url.startsWith('http://');
+        const needsProxyForPlayback = settings.forceProxy || proxyRequiredDomains.some(domain => url.includes(domain)) || (isHttpsPage && isInsecureUrl);
+        const transcodeSourceUrl = url; // always original for server transcode/remux (see VideoPlayer.js for rationale)
 
         // Detect stream type
         const looksLikeHls = url.includes('.m3u8') || url.includes('m3u8');
@@ -452,7 +468,7 @@ class WatchPage {
             console.log('[WatchPage] Auto Transcode enabled. Probing stream...');
             try {
                 const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
-                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+                const probeRes = await API.fetchWithAuth(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
                 const info = await probeRes.json();
                 console.log(`[WatchPage] Probe result: video=${info.video}, audio=${info.audio}, ${info.width}x${info.height}, compatible=${info.compatible}`);
 
@@ -470,16 +486,21 @@ class WatchPage {
                     const statusMode = settings.upscaleEnabled ? 'upscaling' : 'transcoding';
 
                     this.updateTranscodeStatus(statusMode, statusText);
-                    const playlistUrl = await this.startTranscodeSession(url, {
-                        videoMode,
-                        seekOffset: this.resumeTime, // Ensure seekOffset is passed
-                        videoCodec: info.video,
-                        audioCodec: info.audio,
-                        audioChannels: info.audioChannels
-                    });
-                    this.playHls(playlistUrl);
-                    this.setVolumeFromStorage();
-                    return;
+                    try {
+                        const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, {
+                            videoMode,
+                            seekOffset: this.resumeTime, // Ensure seekOffset is passed
+                            videoCodec: info.video,
+                            audioCodec: info.audio,
+                            audioChannels: info.audioChannels
+                        });
+                        this.playHls(playlistUrl);
+                        this.setVolumeFromStorage();
+                        return;
+                    } catch (e) {
+                        if (e.message.includes('overloaded')) return; // error already shown
+                        throw e;
+                    }
                 } else if (info.needsRemux) {
                     // Remux (container swap) currently doesn't use session logic, uses direct stream
                     // TODO: Move remux to session logic if seeking is needed for TS files
@@ -507,7 +528,7 @@ class WatchPage {
             const statusMode = settings.upscaleEnabled ? 'upscaling' : 'transcoding';
             console.log(`[WatchPage] ${statusText} enabled. Starting session (encode)...`);
             this.updateTranscodeStatus(statusMode, statusText);
-            const playlistUrl = await this.startTranscodeSession(url, {
+            const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, {
                 videoMode: 'encode',
                 seekOffset: this.resumeTime
             });
@@ -516,7 +537,15 @@ class WatchPage {
             return;
         }
 
-        if (settings.forceTranscode) {
+        let doForceAudio = settings.forceTranscode;
+        if (!doForceAudio && this.currentStreamInfo && this.currentStreamInfo.audio) {
+            const audio = String(this.currentStreamInfo.audio).toLowerCase();
+            if (audio.includes('eac3') || audio.includes('ac3') || audio.includes('dts') || audio.includes('truehd')) {
+                console.log('[WatchPage] Detected incompatible audio (eac3/ac3 etc) from probe, auto-enabling Force Audio Transcode for browser compatibility');
+                doForceAudio = true;
+            }
+        }
+        if (doForceAudio) {
             console.log('[WatchPage] Force Audio Transcode enabled. Starting session (copy)...');
             this.updateTranscodeStatus('transcoding', 'Transcoding (Audio)');
 
@@ -524,20 +553,25 @@ class WatchPage {
             let videoCodec = 'unknown';
             try {
                 const ua = settings.userAgentPreset === 'custom' ? settings.userAgentCustom : settings.userAgentPreset;
-                const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
+                const probeRes = await API.fetchWithAuth(`/api/probe?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(ua || '')}`);
                 const info = await probeRes.json();
                 videoCodec = info.video;
                 this.injectSubtitleTracks(info, url);
             } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
 
-            const playlistUrl = await this.startTranscodeSession(url, {
-                videoMode: 'copy',
-                videoCodec,
-                seekOffset: this.resumeTime
-            });
-            this.playHls(playlistUrl);
-            this.setVolumeFromStorage();
-            return;
+            try {
+                const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, {
+                    videoMode: 'copy',
+                    videoCodec,
+                    seekOffset: this.resumeTime
+                });
+                this.playHls(playlistUrl);
+                this.setVolumeFromStorage();
+                return;
+            } catch (e) {
+                console.warn('[WatchPage] Force audio transcode failed (' + (e.message || e) + '), falling back to direct proxy play (audio may not work for eac3)');
+                // fall through to the proxy + play logic below so we at least set a src
+            }
         }
 
         // Priority 2: Force Remux for raw TS streams
@@ -553,10 +587,8 @@ class WatchPage {
             return;
         }
 
-        // Determine if proxy is needed
-        const proxyRequiredDomains = ['pluto.tv'];
-        const needsProxy = settings.forceProxy || proxyRequiredDomains.some(domain => url.includes(domain));
-        const finalUrl = needsProxy ? `/api/proxy/stream?url=${encodeURIComponent(url)}` : url;
+        // Use the early computed needsProxyForPlayback
+        const finalUrl = needsProxyForPlayback ? `/api/proxy/stream?url=${encodeURIComponent(url)}` : url;
 
         console.log('[WatchPage] Playing:', { url, needsProxy, looksLikeHls });
 
@@ -884,6 +916,9 @@ class WatchPage {
         const error = this.video?.error;
         if (error && error.code) {
             console.error('[WatchPage] Video error:', error.code, error.message);
+            if (this.video.src === '' || !this.video.src) {
+                this.showError('Playback failed to start (empty stream). This often happens on free-tier VMs when transcoding. Go to Settings → Transcoding and turn OFF "Auto Transcode (Smart)" or set Quality to Low.');
+            }
         }
     }
 

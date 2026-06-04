@@ -48,6 +48,37 @@ const API = {
         return result;
     },
 
+    /**
+     * Low-level fetch that automatically attaches the auth token (for endpoints
+     * that must be called with raw fetch instead of the JSON request() wrapper,
+     * e.g. /api/probe, transcode sessions, some settings fetches).
+     * Falls back to plain fetch if no token (will 401 on protected routes).
+     */
+    fetchWithAuth(url, options = {}) {
+        const token = localStorage.getItem('authToken');
+        const headers = {
+            ...(options.headers || {})
+        };
+        if (token) {
+            // Only set if not already explicitly provided
+            if (!headers.Authorization && !headers.authorization) {
+                headers.Authorization = `Bearer ${token}`;
+            }
+        }
+        return fetch(url, {
+            ...options,
+            headers
+        }).then(async (response) => {
+            if (response.status === 401) {
+                localStorage.removeItem('authToken');
+                window.location.href = '/login.html';
+                // Return a never-resolving promise to stop further processing
+                return new Promise(() => {});
+            }
+            return response;
+        });
+    },
+
     // Sources
     sources: {
         getAll: () => API.request('GET', '/sources'),
@@ -171,3 +202,14 @@ const API = {
 
 // Make API available globally
 window.API = API;
+
+// Shims so that auth.js (and any code that expects these) work even if loaded
+if (!API.getToken) {
+    API.getToken = () => localStorage.getItem('authToken');
+}
+if (!API.setToken) {
+    API.setToken = (token) => {
+        if (token) localStorage.setItem('authToken', token);
+        else localStorage.removeItem('authToken');
+    };
+}

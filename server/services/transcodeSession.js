@@ -30,6 +30,10 @@ const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes idle timeout
 const SEGMENT_DURATION = 4; // seconds per HLS segment
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Check every 5 minutes
 
+// Concurrency limit to protect small VMs (Fly free tier = 1 shared vCPU)
+let activeTranscodes = 0;
+const MAX_CONCURRENT_TRANSCODES = 2; // Conservative for Fly free tier (1 shared vCPU). 1-2 is safe; on paid with more CPU raise to 3+. "copy video + audio transcode" is lighter than full encode.
+
 /**
  * Generate a unique session ID
  */
@@ -659,9 +663,24 @@ class TranscodeSession extends EventEmitter {
  * Create a new transcode session
  */
 async function createSession(url, options = {}) {
+    if (activeTranscodes >= MAX_CONCURRENT_TRANSCODES) {
+        const err = new Error(`Server overloaded: too many concurrent transcodes (${activeTranscodes}/${MAX_CONCURRENT_TRANSCODES}). Try disabling "Auto Transcode" in Settings, use lower quality, or wait a minute.`);
+        err.code = 'TRANSCODE_OVERLOADED';
+        throw err;
+    }
+
     await ensureCacheDir();
     const session = new TranscodeSession(url, options);
     sessions.set(session.id, session);
+
+    // Track active count (increment on start, decrement on cleanup)
+    activeTranscodes++;
+    const originalCleanup = session.cleanup.bind(session);
+    session.cleanup = async function() {
+        await originalCleanup();
+        activeTranscodes = Math.max(0, activeTranscodes - 1);
+    };
+
     return session;
 }
 

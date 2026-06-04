@@ -66,7 +66,7 @@ function getDefaultSettings() {
     forceTranscode: false, // Force Audio Transcode
     forceVideoTranscode: false, // Force Video Transcode
     forceRemux: false,
-    autoTranscode: true,
+    autoTranscode: false,  // Default OFF for free/small VMs (Fly free, Oracle, etc.). Users with strong hardware can enable.
     streamFormat: 'm3u8',
     epgRefreshInterval: '24',
     // User-Agent settings

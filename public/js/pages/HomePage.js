@@ -357,7 +357,7 @@ class HomePage {
 
         try {
             const p = window.API.request('GET', '/channels/recent?type=movie&limit=12');
-            const movies = await Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),15000))]);
+            const movies = await Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),30000))]); // longer under load/transcode
             if (!movies || movies.length === 0) {
                 list.innerHTML = '<div class="empty-state hint">No recently added movies found</div>';
                 return;
@@ -388,7 +388,7 @@ class HomePage {
 
         try {
             const p = window.API.request('GET', '/channels/recent?type=series&limit=12');
-            const series = await Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),15000))]);
+            const series = await Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),30000))]); // longer under load/transcode
             if (!series || series.length === 0) {
                 list.innerHTML = '<div class="empty-state hint">No recently added series found</div>';
                 return;

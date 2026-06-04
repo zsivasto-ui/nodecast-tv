@@ -1,5 +1,9 @@
 # Hosting nodecast-tv to Cloudflare (Oracle + Tunnel)
 
+> **Note for current Fly.io deployment**: If you are using the live Fly app (nodecast-tv-zsivasto.fly.dev), use the Mac-friendly helper instead:
+>   cd nodecast-tv && ./setup-fly-cloudflare-tunnel.sh
+> It supports quick trycloudflare URLs and the simpler Cloudflare DNS CNAME method (often best when the app is already on a public PaaS like Fly). The Oracle-focused steps below are still valid if you switch to an Always-Free VM later.
+
 This file was prepared for you in the workspace.
 
 ## Prerequisites (do this first on your local machine)

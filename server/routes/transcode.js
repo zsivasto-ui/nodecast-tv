@@ -7,8 +7,29 @@ const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
 const { requireAuth } = require('../auth');
 
-// Transcoding is CPU/GPU heavy; all transcode endpoints require authentication
-router.use(requireAuth);
+// Transcoding is CPU/GPU heavy; most endpoints require authentication.
+// However, the actual media subresources (playlist + segments) and the direct
+// transcode URL are loaded by the browser's <video> element / hls.js as subresource
+// fetches. These cannot easily carry a custom Authorization: Bearer header.
+// We skip auth for them (the provider URL inside already contains credentials;
+// the endpoint mainly provides on-the-fly transcoding + CORS fix).
+router.use((req, res, next) => {
+    const p = req.path || '';
+    const method = req.method;
+
+    // Skip auth for media delivery (hls.js / <video src> can't send Bearer)
+    if (
+        method === 'GET' && (
+            p === '/' ||                              // direct /api/transcode?url=...
+            /^\/\w+\/stream\.m3u8$/.test(p) ||        // session playlist
+            /^\/\w+\/[^/]+\.ts$/.test(p)              // session segments
+        )
+    ) {
+        return next();
+    }
+
+    return requireAuth(req, res, next);
+});
 
 /**
  * Transcode Routes
@@ -81,6 +102,9 @@ router.post('/session', async (req, res) => {
 
     } catch (err) {
         console.error('[Transcode] Session creation failed:', err);
+        if (err.code === 'TRANSCODE_OVERLOADED') {
+            return res.status(503).json({ error: err.message, code: 'OVERLOADED' });
+        }
         res.status(500).json({ error: 'Failed to create session', details: err.message });
     }
 });

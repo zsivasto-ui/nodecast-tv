@@ -828,17 +828,25 @@ class VideoPlayer {
     async startTranscodeSession(url, options = {}) {
         try {
             console.log('[Player] Starting HLS transcode session...', options);
-            const res = await fetch('/api/transcode/session', {
+            const res = await API.fetchWithAuth('/api/transcode/session', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url, ...options })
             });
-            if (!res.ok) throw new Error('Failed to start session');
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                if (data.code === 'OVERLOADED' || res.status === 503) {
+                    console.warn('[Player] Transcode overloaded (free tier limit). Disable "Auto Transcode (Smart)" and "Force Audio Transcode" in Settings → Transcoding. Only enable when needed. Current limit protects the small VM.');
+                    throw new Error('OVERLOADED');
+                }
+                throw new Error(data.error || 'Failed to start session');
+            }
             const session = await res.json();
             this.currentSessionId = session.sessionId;
             return session.playlistUrl;
         } catch (err) {
             console.error('[Player] Session start failed:', err);
+            if (err.message === 'OVERLOADED') throw err;
             // Fallback to direct transcode if session fails
             return `/api/transcode?url=${encodeURIComponent(url)}`;
         }
@@ -852,7 +860,7 @@ class VideoPlayer {
             console.log('[Player] Stopping transcode session:', this.currentSessionId);
             try {
                 // Fire and forget cleanup
-                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
+                API.fetchWithAuth(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
             } catch (err) {
                 console.error('Failed to stop session:', err);
             }
@@ -884,11 +892,21 @@ class VideoPlayer {
             // Determine if HLS or direct stream
             this.currentUrl = streamUrl;
 
+            // needsProxyForPlayback: when the *client's* video/hls element should load streams via our server proxy
+            // (solves mixed-content http->https, CORS on some providers like Pluto, or user Force Proxy).
+            // For server-side transcode/remux sessions, we ALWAYS pass the original source URL (ffmpeg on server
+            // pulls the media directly using our configured UA + reconnect logic; no need for extra proxy hop).
+            const proxyRequiredDomains = ['pluto.tv'];
+            const isHttpsPage = location.protocol === 'https:';
+            const isInsecureUrl = streamUrl.startsWith('http://');
+            const needsProxyForPlayback = this.settings.forceProxy || proxyRequiredDomains.some(domain => streamUrl.includes(domain)) || (isHttpsPage && isInsecureUrl);
+            const transcodeSourceUrl = streamUrl;
+
             // CHECK: Auto Transcode (Smart) - probe first, then decide
             if (this.settings.autoTranscode) {
                 console.log('[Player] Auto Transcode enabled. Probing stream...');
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
+                    const probeRes = await API.fetchWithAuth(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
                     const info = await probeRes.json();
                     console.log(`[Player] Probe result: video=${info.video}, audio=${info.audio}, ${info.width}x${info.height}, compatible=${info.compatible}`);
 
@@ -929,7 +947,7 @@ class VideoPlayer {
                         const statusMode = this.settings.upscaleEnabled ? 'upscaling' : 'transcoding';
 
                         this.updateTranscodeStatus(statusMode, statusText);
-                        const playlistUrl = await this.startTranscodeSession(streamUrl, {
+                        const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, {
                             videoMode,
                             videoCodec: info.video,
                             audioCodec: info.audio,
@@ -974,7 +992,7 @@ class VideoPlayer {
                 const statusMode = this.settings.upscaleEnabled ? 'upscaling' : 'transcoding';
                 console.log(`[Player] ${statusText} enabled. Starting session (encode)...`);
                 this.updateTranscodeStatus(statusMode, statusText);
-                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'encode' });
+                const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, { videoMode: 'encode' });
                 this.currentUrl = playlistUrl;
 
                 // Load HLS
@@ -1013,38 +1031,52 @@ class VideoPlayer {
             }
 
             // CHECK: Force Audio Transcode (Copy Video) - legacy forceTranscode setting
-            if (this.settings.forceTranscode) {
+            let doForceAudio = this.settings.forceTranscode;
+            if (!doForceAudio && this.currentStreamInfo && this.currentStreamInfo.audio) {
+                const audio = String(this.currentStreamInfo.audio).toLowerCase();
+                if (audio.includes('eac3') || audio.includes('ac3') || audio.includes('dts') || audio.includes('truehd')) {
+                    console.log('[Player] Detected incompatible audio (eac3/ac3 etc), auto-enabling Force Audio Transcode');
+                    doForceAudio = true;
+                }
+            }
+            if (doForceAudio) {
                 console.log('[Player] Force Audio Transcode enabled. Starting session (copy)...');
                 this.updateTranscodeStatus('transcoding', 'Transcoding (Audio)');
 
                 // Probe to get video codec for HEVC tag handling
                 let videoCodec = 'unknown';
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
+                    const probeRes = await API.fetchWithAuth(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
                     const info = await probeRes.json();
                     videoCodec = info.video;
                 } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
 
-                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'copy', videoCodec });
-                this.currentUrl = playlistUrl;
+                try {
+                    const playlistUrl = await this.startTranscodeSession(transcodeSourceUrl, { videoMode: 'copy', videoCodec });
+                    this.currentUrl = playlistUrl;
 
-                console.log('[Player] Playing transcoded HLS stream:', playlistUrl);
-                this.playHls(playlistUrl);
+                    console.log('[Player] Playing transcoded HLS stream:', playlistUrl);
+                    this.playHls(playlistUrl);
 
-                // Update UI and dispatch events
-                this.updateNowPlaying(channel);
-                this.showNowPlayingOverlay();
-                this.fetchEpgData(channel);
-                window.dispatchEvent(new CustomEvent('channelChanged', { detail: channel }));
-                return; // Exit early
+                    // Update UI and dispatch events
+                    this.updateNowPlaying(channel);
+                    this.showNowPlayingOverlay();
+                    this.fetchEpgData(channel);
+                    window.dispatchEvent(new CustomEvent('channelChanged', { detail: channel }));
+                    return; // Exit early
+                } catch (e) {
+                    console.warn('[Player] Force audio transcode failed (' + (e.message || e) + '), falling back to direct proxy (audio may not play for eac3 etc)');
+                    // fall through to proxy logic below
+                }
             }
 
             // Proactively use proxy for:
             // 1. User enabled "Force Proxy" in settings
             // 2. Known CORS-restricted domains (like Pluto TV)
-            // Note: Xtream sources are NOT auto-proxied because many providers IP-lock streams
-            const proxyRequiredDomains = ['pluto.tv'];
-            const needsProxy = this.settings.forceProxy || proxyRequiredDomains.some(domain => streamUrl.includes(domain));
+            // 3. HTTP streams when the app is served over HTTPS (mixed content prevention)
+            // Note: Xtream sources are NOT auto-proxied by default because many providers IP-lock streams (but we force for http->https)
+            // Reuse the early needsProxyForPlayback computation (same condition)
+            const needsProxy = needsProxyForPlayback;
 
             this.isUsingProxy = needsProxy;
             const finalUrl = needsProxy ? this.getProxiedUrl(streamUrl) : streamUrl;

@@ -72,10 +72,67 @@
 - Push any local changes: git add . && git commit -m "..." && git push myfork main
 - All custom work (auth, UI, scripts) is in your fork.
 
-## Next Session
-- Start here: cd /Users/steve/nodecast-tv
-- Resume Fly deploy + volume + tunnel as above.
-- Or switch to new Oracle account + Ashburn if preferred.
-- Paste any errors/screenshots and we'll continue.
+## Progress 2026-06-04 - Cloudflare Setup Started
+- App confirmed live: https://nodecast-tv-zsivasto.fly.dev (1 machine in iad, volume attached)
+- Orphan volume cleaned up (only the attached one remains).
+- cloudflared installed locally, version 2026.5.2
+- Quick Cloudflare Tunnel test succeeded (using direct --url to Fly hostname, no local proxy needed):
+  - Example URL generated: https://instruction-arbitration-cons-organizer.trycloudflare.com (was active while tunnel process ran)
+  - Note: quick/anonymous tunnels are ephemeral; run the command below with process kept alive for a live CF URL.
+- Login flow initiated for named tunnels (full setup / stable ID / future custom domain routing).
+- fly proxy had connectivity issue in harness (not user env); direct --url to public Fly URL works great for CF fronting.
+- No cert.pem yet in ~/.cloudflared (pending browser auth completion).
+- Added Mac-friendly helper: setup-fly-cloudflare-tunnel.sh (interactive menu for quick/named/CNAME)
+- Added launchd example: com.nodecast.cloudflared.plist.example (for auto-start on Mac login)
 
-Everything is saved in your GitHub repo + this file. See you later!
+## How to Continue Cloudflare Setup Now (Run these in your terminal)
+1. Best starting point — run the new interactive helper we just created:
+   ```bash
+   cd /Users/steve/nodecast-tv
+   ./setup-fly-cloudflare-tunnel.sh
+   ```
+   It has a menu for:
+   - Quick trycloudflare.com URL (option 1 — do this first, no login needed)
+   - Named tunnel full setup (option 2)
+   - The simpler Cloudflare DNS CNAME method (option 4 — often best for Fly)
+
+2. If you prefer manual quick test right now (no login):
+   ```bash
+   cloudflared tunnel --url https://nodecast-tv-zsivasto.fly.dev
+   ```
+   Keep the process running. It will print a https://...trycloudflare.com link. Visit it + `#live`.
+
+3. For named tunnel (stable):
+   - First complete browser login: `cloudflared tunnel login` (it will give you a URL like the previous one)
+   - Then: `cloudflared tunnel create nodecast-tv`
+   - Run: `cloudflared tunnel run --url https://nodecast-tv-zsivasto.fly.dev nodecast-tv`
+
+4. Auto-start on your Mac (launchd):
+   - Copy the example: `cp com.nodecast.cloudflared.plist.example ~/Library/LaunchAgents/com.nodecast.cloudflared.plist`
+   - Edit the plist if you used a different tunnel name.
+   - `launchctl load ~/Library/LaunchAgents/com.nodecast.cloudflared.plist`
+   - `launchctl start com.nodecast.cloudflared`
+   - Logs: `tail -f /tmp/cloudflared-nodecast.log`
+
+   (Note: only runs while your Mac is on and you're logged in. For 24/7 use the CNAME method or run cloudflared inside Fly.)
+
+5. (Strongly recommended long-term for Fly apps) Use Cloudflare DNS + CNAME instead of a tunnel process at all (see option 4 in the script, or the details in the script output).
+
+## Recommended Alternative: Native Cloudflare + Fly Custom Domain (Simpler for Fly)
+- In Fly: `fly certs create yourdomain.com -a nodecast-tv-zsivasto` (or via dashboard)
+- In Cloudflare DNS for your domain: CNAME `live` -> `nodecast-tv-zsivasto.fly.dev` (enable orange cloud / proxy)
+- In CF SSL/TLS: set to "Full" or "Full (strict)"
+- This gives you yourdomain.com with CF security in front of Fly, no tunnel process needed.
+- Fly will handle the cert too (or let CF do SSL).
+
+## Next Steps After CF URL Works
+- Visit the CF URL, create your first admin user
+- Settings > Transcoding: Hardware Encoder=software, Max Resolution=720p, Quality=low (Fly free tier limits)
+- Add your Xtream/M3U sources
+- Test live TV / #live section
+- (Optional) Lock down in Fly if needed (but public PaaS)
+
+## Oracle Path Reminder
+Still available if you want bigger free VM later.
+
+Update this file or the CLOUDFLARE_DEPLOY_STEPS.md as we go. Paste output/errors from the commands above.

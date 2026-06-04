@@ -3,8 +3,14 @@ const router = express.Router();
 const { spawn } = require('child_process');
 const { requireAuth } = require('../auth');
 
-// Subtitle extraction (ffmpeg) requires auth
-router.use(requireAuth);
+// Subtitle extraction (ffmpeg) requires auth.
+// Skip for the <track src> subresource fetch (can't carry Bearer token).
+router.use((req, res, next) => {
+    if (req.method === 'GET' && req.path === '/') {
+        return next();
+    }
+    return requireAuth(req, res, next);
+});
 
 /**
  * Subtitle extraction endpoint

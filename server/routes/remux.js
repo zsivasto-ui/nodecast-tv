@@ -4,8 +4,15 @@ const { spawn } = require('child_process');
 const db = require('../db');
 const { requireAuth } = require('../auth');
 
-// Remux uses server CPU; require auth to prevent abuse
-router.use(requireAuth);
+// Remux uses server CPU; require auth to prevent abuse.
+// Skip for the media delivery itself (video.src = /api/remux?url=...) because
+// <video> and fetch from media elements don't send custom Authorization headers.
+router.use((req, res, next) => {
+    if (req.method === 'GET' && req.path === '/') {
+        return next();
+    }
+    return requireAuth(req, res, next);
+});
 
 /**
  * Remux stream (container conversion only)
