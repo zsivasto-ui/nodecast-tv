@@ -136,3 +136,70 @@
 Still available if you want bigger free VM later.
 
 Update this file or the CLOUDFLARE_DEPLOY_STEPS.md as we go. Paste output/errors from the commands above.
+
+## Progress 2026-06-04 (continued) - Code fixes + Deploy + Cloudflare next
+- Reviewed running app logs: transcode sessions failing with "Error opening input file /api/proxy/stream?..." because frontend was passing proxied client URL (meant for browser playback) as the *source* to /api/transcode/session and legacy transcode.
+- Fixed in both Live TV (VideoPlayer.js) and VOD/Series (WatchPage.js): now always pass original source URL to startTranscodeSession / remux constructions. Proxy wrapper only used for final client-facing playback URLs (video.src / hls.loadSource).
+- This matches the architecture: server-side ffmpeg always pulls original media (using its -user_agent + reconnect flags); the /api/proxy is only to let the *browser* reach http sources or bypass provider CORS when loading processed or raw streams.
+- Committed + pushed the fix + all prior uncommitted work (proxy UA improvements, binary streaming without full buffer to prevent OOM, subtitle, db, EPG, settings, etc.) to myfork main.
+- Triggered `fly deploy` (build context sent; new image will have the transcode fix).
+- After deploy succeeds, the app at https://nodecast-tv-zsivasto.fly.dev will have working transcoding for incompatible audio (eac3 etc) and VOD seeking via HLS sessions.
+- Next: run the Cloudflare helper to get a nice trycloudflare.com (or named) front for the app.
+
+## Immediate next commands (paste/run in terminal)
+```bash
+cd /Users/steve/nodecast-tv
+
+# Check deploy finished (or tail the bg task if using harness)
+fly status -a nodecast-tv-zsivasto
+fly logs -a nodecast-tv-zsivasto --no-tail | tail -20
+
+# Start quick Cloudflare front (ephemeral but instant, no login):
+./setup-fly-cloudflare-tunnel.sh
+# Choose option 1, keep the process running in that terminal.
+# It will print a https://random.trycloudflare.com  -- visit it, append #live if needed.
+```
+
+(If deploy still running in background here, wait for it or run `fly deploy` yourself.)
+
+After CF URL loads:
+- If first run on this volume: create admin account.
+- Settings > Transcoding: set Hardware=software, Max Res=720p, Quality=low (important for 1CPU free tier).
+- Add a content source if not already (the local data/ had some, but volume is fresh?).
+- Test a channel that needs audio transcode (many have eac3), or a VOD series/movie.
+- Check Settings > About for version info (we added that earlier).
+
+Useful:
+fly ssh console -a nodecast-tv-zsivasto   # then cd /app ; ls data/ ; tail -f /app/data/content.db-wal or just use the web UI logs? No, app has no built-in log viewer yet.
+
+## Cloudflare Quick Tunnel Started (this session)
+- Ran: cloudflared tunnel --url https://nodecast-tv-zsivasto.fly.dev
+- Public URL (ephemeral, valid while the tunnel process runs): https://infants-recognize-tolerance-announces.trycloudflare.com
+- Verified: curl returns 200, CF headers present (cf-ray etc).
+- App is reachable via Cloudflare front-end right now (in this environment's bg tunnel).
+
+**For you (user) to access right now:**
+1. In *your* terminal (on your Mac):
+   ```bash
+   cd /Users/steve/nodecast-tv
+   ./setup-fly-cloudflare-tunnel.sh
+   # pick 1 for quick (or 2 for named after login)
+   ```
+   Or directly:
+   ```bash
+   cloudflared tunnel --url https://nodecast-tv-zsivasto.fly.dev
+   ```
+   Keep that terminal open. Copy the printed https://*.trycloudflare.com link.
+2. Visit the link in browser. It may take 10-30s first time to be ready.
+3. Create admin if prompted (first visit to fresh volume).
+4. Configure transcoding for free tier as noted.
+5. Add sources via Settings > Content Sources > Refresh.
+
+**To stop the tunnel (when done testing):** Ctrl+C in its terminal, or `pkill -f cloudflared`.
+
+**For persistent/no-Mac-running:**
+- Use option 4 in the script (CNAME to yourdomain via Cloudflare DNS, orange cloud).
+- Or move cloudflared inside the Fly machine (we can add to Dockerfile if wanted: install cloudflared, run as side process or use fly's own? but Fly has its proxy already).
+
+App is now in good shape with the source-URL fix deployed (machine version 13).
+
